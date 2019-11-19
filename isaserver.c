@@ -15,17 +15,20 @@
 #define QUEUE 1 // queue length for  waiting connections
 #define USG_MSG "Usage:  ./isaserver [-p , -h] <port>\n"
 #define HLP_MSG "HELP:  ./isaserver [-p , -h] <port>\n"
+
+// Request codes
 #define RQ_OK 200
 #define RQ_CREATED 201
 #define RQ_NOT_FOUND 404
 #define RQ_EXISTS 409
 #define RQ_CL 400
 
+// String
 #define STR_LEN_INC 8
-
 #define STR_ERROR 1
 #define STR_SUCCESS 0
 
+// Request structure
 typedef struct
 {
     char type[7];
@@ -36,6 +39,7 @@ typedef struct
 
 tRqst rqst;
 
+// Linked lists for boards and board items
 typedef struct tElem
 {
     struct tElem *nPtr;
@@ -52,11 +56,13 @@ typedef struct tBoard
     struct tBoard *pPtr;
 } * tBoardPtr;
 
+// List structure
 typedef struct
 {
     tBoardPtr First;
 } tList;
 
+// String structure
 typedef struct
 {
     char *str;
@@ -103,10 +109,11 @@ int main(int argc, char *argv[])
     tList boardList;
     string response;
 
+    // Init board list and response string
     initList(&boardList);
     strInit(&response);
 
-    // Test for correct number of arguments
+    // Test the correct number of arguments
     if (argc >= 4)
     {
         handleError(USG_MSG);
@@ -116,15 +123,20 @@ int main(int argc, char *argv[])
         handleArguments(argc, argv);
     }
 
-    // create a server socket
-    // AF_INET = IPv4 protocol
+    // Create a server socket
+    // AF_INET = IPv4 Internet address family
     // SOCK_STREAM = TCP
     if ((fd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
         err(1, "socket(): could not create the socket");
 
-    server.sin_family = AF_INET;            // initialize server's sockaddr_in structure
-    server.sin_addr.s_addr = INADDR_ANY;    // wait on every network interface, see <netinet/in.h>
-    server.sin_port = htons(atoi(argv[2])); // set the port where server is waiting
+    // initialize server's sockaddr_in structure
+    server.sin_family = AF_INET;
+
+    // wait on every network interface, see <netinet/in.h>
+    server.sin_addr.s_addr = INADDR_ANY;
+
+    // set the port from program arguments where server is waiting
+    server.sin_port = htons(atoi(argv[2]));
 
     if (bind(fd, (struct sockaddr *)&server, sizeof(server)) < 0) //bind the socket to the port
         err(1, "bind() failed");
@@ -147,11 +159,14 @@ int main(int argc, char *argv[])
         while ((msg_size = read(newsock, buffer, BUFFER)) > 0)
         { // read the message
 
+            // Get the exact msg without other characters
             char newBuffer[msg_size];
             sprintf(newBuffer, "%.*s", msg_size, buffer);
 
+            // Process the request
             processRequest(newBuffer);
 
+            // Create the response
             createResponse(&boardList, &response, newBuffer);
 
             char rspns[BUFFER];
@@ -164,6 +179,7 @@ int main(int argc, char *argv[])
             else if (i != msg_size)
                 err(1, "write(): buffer written partially");
 
+            // Clear response string
             strClear(&response);
         }
 
@@ -173,23 +189,27 @@ int main(int argc, char *argv[])
     // close the server
     close(fd); // close an original server socket
 
+    // Final cleanup
     strFree(&response);
     disposeList(&boardList);
     return 0;
 }
 
+// Function for error handling, print error to stderr and exit the program
 void handleError(char *errorMessage)
 {
     fprintf(stderr, "%s", errorMessage);
     exit(1);
 }
 
+// Function for printing out help msg
 void handleHelp()
 {
     printf(HLP_MSG);
     exit(0);
 }
 
+// Program argument error checking
 void handleArguments(int argc, char *argv[])
 {
     switch (argc)
@@ -197,6 +217,7 @@ void handleArguments(int argc, char *argv[])
     case 2:
         if (strcmp(argv[1], "-h") == 0)
         {
+            // Print out help msg
             handleHelp();
         }
         else
@@ -232,11 +253,14 @@ void handleArguments(int argc, char *argv[])
     }
 }
 
+// Port number error checking
 bool isNumber(char argv[])
 {
+    // Can not be negative number
     if (argv[0] == '-')
         handleError("Port can not be negative!\n");
 
+    // Check all characters
     for (int i = 0; argv[i] != 0; i++)
     {
         if (!isdigit(argv[i]))
@@ -245,6 +269,8 @@ bool isNumber(char argv[])
     return true;
 }
 
+// Function gets the whole request as a prameter
+// sends each line of the request message to another function
 void processRequest(char msg[])
 {
     char c;
@@ -256,6 +282,8 @@ void processRequest(char msg[])
     {
         c = msg[i];
 
+        // If end of line, pass line to processLine function,
+        // else append character to string
         if (c == '\n')
         {
             processLine(&line);
@@ -270,6 +298,8 @@ void processRequest(char msg[])
     strFree(&line);
 }
 
+// Function gets a line from the request message
+// Appends information from request to the request structure
 void processLine(string *line)
 {
     char c;
@@ -285,16 +315,22 @@ void processLine(string *line)
 
         if (c == ' ' || c == '\0')
         {
+            // Line starts with GET, POST, PUT, DELETE
+            // Sets the request url in struct
+            // These are set in the ELSE section
             if (isRqst)
             {
                 sprintf(rqst.url, word.str);
                 isRqst = false;
             }
+            // Line starts with Content-Length:
+            // Sets the request content length in struct
             else if (isCl)
             {
                 rqst.cl = atoi(word.str);
                 isCl = false;
             }
+            // Set flags based on correct request types and headers
             else
             {
                 if ((strcmp(word.str, "GET") == 0) ||
@@ -325,17 +361,21 @@ void processLine(string *line)
     strFree(&word);
 }
 
+// Create response message based on request structure
+// Structure is filled with info. from processRequest and processLine functions
 void createResponse(tList *L, string *response, char buffer[])
 {
     int code = RQ_NOT_FOUND;
     string body;
     strInit(&body);
 
+    // Get request type
     if (strcmp(rqst.type, "POST") == 0)
     {
         // POST /boards/name
         if (isBoards(rqst.url))
         {
+            // Get name from url
             char name[20];
             memcpy(name, &rqst.url[8], strlen(rqst.url) - 8);
             name[strlen(rqst.url) - 8] = '\0';
@@ -351,10 +391,12 @@ void createResponse(tList *L, string *response, char buffer[])
             }
             else
             {
+                // Get name from url
                 char name[20];
                 memcpy(name, &rqst.url[7], strlen(rqst.url) - 7);
                 name[strlen(rqst.url) - 7] = '\0';
 
+                // Get content from message
                 char content[rqst.cl + 1];
                 int poz = strlen(buffer) - rqst.cl - 2;
                 memcpy(content, &buffer[poz], rqst.cl);
@@ -375,6 +417,7 @@ void createResponse(tList *L, string *response, char buffer[])
         // GET /board/name
         else
         {
+            // Get name from url
             char name[20];
             memcpy(name, &rqst.url[7], strlen(rqst.url) - 7);
             name[strlen(rqst.url) - 7] = '\0';
@@ -387,6 +430,7 @@ void createResponse(tList *L, string *response, char buffer[])
         // DELETE /boards/name
         if (isBoards(rqst.url))
         {
+            // Get name from url
             char name[20];
             memcpy(name, &rqst.url[8], strlen(rqst.url) - 8);
             name[strlen(rqst.url) - 8] = '\0';
@@ -396,6 +440,7 @@ void createResponse(tList *L, string *response, char buffer[])
         // DELETE /board/name/id
         else
         {
+            // Get name and ID from url
             char url[50];
             memcpy(url, &rqst.url[7], strlen(rqst.url) - 7);
             url[strlen(rqst.url) - 7] = '\0';
@@ -418,6 +463,7 @@ void createResponse(tList *L, string *response, char buffer[])
     {
         if (!isBoards(rqst.url))
         {
+            // Get name, ID from url and content from request
             char url[50];
             memcpy(url, &rqst.url[7], strlen(rqst.url) - 7);
             url[strlen(rqst.url) - 7] = '\0';
@@ -446,6 +492,7 @@ void createResponse(tList *L, string *response, char buffer[])
         code = RQ_NOT_FOUND;
     }
 
+    // Append text based on code
     char codeName[20];
     if (code == RQ_OK)
     {
@@ -468,10 +515,12 @@ void createResponse(tList *L, string *response, char buffer[])
         sprintf(codeName, "Bad Request\r\n");
     }
 
+    // Create header
     char rqHeader[100] = "HTTP/1.1 ";
     sprintf(rqHeader, "%s%d %s", rqHeader, code, codeName);
     string_concat(response, rqHeader);
 
+    // If there is content, append headers and content after headers
     if (body.length != 0)
     {
         char ctHeaders[100] = "Content-Type: text/plain\r\n";
@@ -485,6 +534,7 @@ void createResponse(tList *L, string *response, char buffer[])
     strFree(&body);
 }
 
+// Check if url is board or boards
 bool isBoards(char url[])
 {
     string str;
@@ -516,11 +566,13 @@ bool isBoards(char url[])
     return result;
 }
 
+// Initialize lists
 void initList(tList *L)
 {
     L->First = NULL;
 }
 
+// Create new board if it does not exists
 int newBoard(tList *L, char name[])
 {
     if (strlen(name) > MAX_NAME)
@@ -531,6 +583,7 @@ int newBoard(tList *L, char name[])
     }
     else
     {
+        // Check if board already exists
         tBoardPtr tmp = findByName(L, name);
         if (tmp != NULL)
         {
@@ -565,6 +618,7 @@ int newBoard(tList *L, char name[])
     }
 }
 
+// Find board by name and return the pointer to it
 tBoardPtr findByName(tList *L, char name[])
 {
     tBoardPtr tmp = L->First;
@@ -584,6 +638,7 @@ tBoardPtr findByName(tList *L, char name[])
     return NULL;
 }
 
+// Find element by ID and return the pointer to it
 tElemPtr findById(tBoardPtr B, int id)
 {
     int tmpId = 1;
@@ -603,6 +658,7 @@ tElemPtr findById(tBoardPtr B, int id)
     return tmp;
 }
 
+// Create new post
 int newPost(tList *L, char name[], char content[])
 {
     tBoardPtr tmp = findByName(L, name);
@@ -642,6 +698,7 @@ int newPost(tList *L, char name[], char content[])
     }
 }
 
+// Delete board
 int deleteBoard(tList *L, char name[])
 {
     tBoardPtr tmp = findByName(L, name);
@@ -674,6 +731,7 @@ int deleteBoard(tList *L, char name[])
     return RQ_OK;
 }
 
+// Get all boards
 int getBoards(tList *L, string *str)
 {
     strClear(str);
@@ -694,6 +752,7 @@ int getBoards(tList *L, string *str)
     return RQ_OK;
 }
 
+// Get all posts with IDs
 int getPosts(tList *L, char name[], string *str)
 {
     tBoardPtr tmp = findByName(L, name);
@@ -711,6 +770,7 @@ int getPosts(tList *L, char name[], string *str)
     int id = 1;
     char cId[10];
 
+    // Append ID s to posts
     while (post != NULL)
     {
         sprintf(cId, "%d", id);
@@ -726,6 +786,7 @@ int getPosts(tList *L, char name[], string *str)
     return RQ_OK;
 }
 
+// Change post content
 int changePost(tList *L, char name[], int id, char content[])
 {
     tBoardPtr tmp = findByName(L, name);
@@ -745,6 +806,7 @@ int changePost(tList *L, char name[], int id, char content[])
     return RQ_OK;
 }
 
+// Delete post
 int deletePost(tList *L, char name[], int id)
 {
     tBoardPtr tmp = findByName(L, name);
@@ -787,6 +849,7 @@ int deletePost(tList *L, char name[], int id)
     return RQ_OK;
 }
 
+// Free the list of boards
 void disposeList(tList *L)
 {
     tBoardPtr tmp;
@@ -805,6 +868,7 @@ void disposeList(tList *L)
     }
 }
 
+// Free the list of posts(board items)
 void disposeBoard(tBoardPtr B)
 {
     tElemPtr tmp;
@@ -818,6 +882,7 @@ void disposeBoard(tBoardPtr B)
     }
 }
 
+// Function initializes the string
 int strInit(string *s)
 {
     if ((s->str = (char *)malloc(STR_LEN_INC)) == NULL)
@@ -828,17 +893,20 @@ int strInit(string *s)
     return STR_SUCCESS;
 }
 
+// Function frees all resources used by the string
 void strFree(string *s)
 {
     free(s->str);
 }
 
+// Function clears string data and returns it to after-init state
 void strClear(string *s)
 {
     s->str[0] = '\0';
     s->length = 0;
 }
 
+//  Function appends a character to the string
 int strAddChar(string *s1, char c)
 {
     if (s1->length + 1 >= s1->allocSize)
@@ -853,6 +921,7 @@ int strAddChar(string *s1, char c)
     return STR_SUCCESS;
 }
 
+// Function concatenates string with an array of characters
 int *string_concat(string *s1, const char *s2)
 {
     int length_const_char = strlen(s2);

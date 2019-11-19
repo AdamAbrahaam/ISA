@@ -10,6 +10,7 @@
 #include <pwd.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <fcntl.h>
 
 #define BUFFER 1024 // buffer length
 #define HLP_MSG "\nUsage: ./isaclient -H <host> -p <port> <command> \nboards\nboard add<name>\nboard delete<name>\nboard list<name>\nitem add<name><content>\nitem delete<name><id>\nitem update<name><id><content>\n"
@@ -48,85 +49,127 @@ int main(int argc, char *argv[])
     struct sockaddr_in local, server;
     struct hostent *servent; // a pointer to the server addresses
     char buffer[BUFFER];
-    char request[BUFFER];
+    int returnCode = 0;
 
+    string request;
+    strInit(&request);
+
+    // Argument handling
     if (argc > 10 || argc < 2)
         errx(1, "%s", HLP_MSG);
     else
     {
         handleArguments(argc, argv);
-        sprintf(request, handleCommands(argc, argv));
+        string_concat(&request, handleCommands(argc, argv));
     }
 
-    memset(&server, 0, sizeof(server)); // erase the server structure
-    memset(&local, 0, sizeof(local));   // erase the local address structure
+    // Erase the server and local address structure
+    memset(&server, 0, sizeof(server));
+    memset(&local, 0, sizeof(local));
 
+    // Set address family
     server.sin_family = AF_INET;
 
-    // make DNS resolution of the first parameter using gethostbyname()
-    if ((servent = gethostbyname(argv[2])) == NULL) // check the first parameter
+    // Check host parameter and make DNS resolution of it using gethostbyname()
+    if ((servent = gethostbyname(argv[2])) == NULL)
         errx(1, "gethostbyname() failed\n");
 
-    // copy the first parameter to the server.sin_addr structure
+    // Copy the host to the server.sin_addr structure
     memcpy(&server.sin_addr, servent->h_addr, servent->h_length);
 
-    server.sin_port = htons(atoi(argv[4])); // server port (network byte order)
+    // Set the server port (network byte order)
+    server.sin_port = htons(atoi(argv[4]));
 
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1) //create a client socket
+    // Create a client socket
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1)
         err(1, "socket() failed\n");
 
-    // connect to the remote server
-    // client port and IP address are assigned automatically by the operating system
+    struct timeval TimeOut;
+    if ((fcntl(sock, F_GETFL, NULL)) < 0)
+    {
+        err(1, "Connection timed out!");
+    }
+    TimeOut.tv_sec = 5;
+    TimeOut.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &TimeOut, sizeof(TimeOut));
 
+    // Connect to the remote server
+    // client port and IP address are assigned automatically by the operating system
     if (connect(sock, (struct sockaddr *)&server, sizeof(server)) == -1)
         err(1, "connect() failed");
 
-    // obtain the local IP address and port using getsockname()
+    // Obtain the local IP address and port using getsockname()
     len = sizeof(local);
     if (getsockname(sock, (struct sockaddr *)&local, &len) == -1)
         err(1, "getsockname() failed");
 
-    // send http request to server
-    strcpy(buffer, request);
+    // Buffer fit error checking
+    if (request.length >= BUFFER)
+    {
+        err(1, "Message is too long!");
+    }
+    else
+    {
+        strcpy(buffer, request.str);
+    }
 
-    i = write(sock, buffer, strlen(request));
+    // Send http request to server
+    i = write(sock, buffer, request.length);
     if (i == -1)
     {
         err(1, "initial write() failed");
     }
 
+    // Read an initial string
     if ((i = read(sock, buffer, BUFFER)) == -1)
-    { // read an initial string
+    {
         err(1, "initial read() failed");
     }
     else
     {
+        // Init strings
         string content;
         string headers;
         strInit(&content);
         strInit(&headers);
 
+        // Get the exact answer without random characters
         sprintf(buffer, "%.*s", i, buffer);
 
         getContent(buffer, &content);
 
+        // Get headers from the response
         char tmp[BUFFER];
         memcpy(tmp, &buffer[0], strlen(buffer) - content.length - 2);
         tmp[strlen(buffer) - content.length - 2] = '\0';
         string_concat(&headers, tmp);
 
-        //printf("%.*s", i, buffer);
+        // Get code from header
+        char codeChar[4];
+        strncpy(codeChar, headers.str + 9, 3);
+        int code = atoi(codeChar);
+
+        // Set returnCode when unsuccessful
+        if (code != 200 && code != 201)
+        {
+            returnCode = 1;
+        }
+
+        // Print out the answer
         fprintf(stderr, "%.*s", headers.length, headers.str);
         fprintf(stdout, "%.*s", content.length, content.str);
 
+        // Cleanup
         strFree(&content);
         strFree(&headers);
     }
 
+    // Close the socket
     close(sock);
-    return 0;
+    return returnCode;
 }
 
+// Get content from message
 void getContent(char buffer[], string *content)
 {
     int cl = 0;
@@ -136,6 +179,7 @@ void getContent(char buffer[], string *content)
     string word;
     strInit(&word);
 
+    // Get content length from Content-Length header
     for (int i = 0; i <= strlen(buffer); i++)
     {
         c = buffer[i];
@@ -162,6 +206,7 @@ void getContent(char buffer[], string *content)
         }
     }
 
+    // Cut content from message according to content length
     if (cl != 0)
     {
         char cntnt[BUFFER];
@@ -177,6 +222,7 @@ void getContent(char buffer[], string *content)
     strFree(&word);
 }
 
+// Program argument error checking
 void handleArguments(int argc, char *argv[])
 {
     if (strcmp(argv[1], "-h") == 0)
@@ -186,6 +232,7 @@ void handleArguments(int argc, char *argv[])
     }
 }
 
+// Handle program commands, return the request
 char *handleCommands(int argc, char *argv[])
 {
     static char request[BUFFER];
@@ -196,6 +243,7 @@ char *handleCommands(int argc, char *argv[])
     case 6:
         if (strcmp(argv[5], "boards") == 0)
         {
+            // Get request from createRequest and copy it to local variable
             strcpy(request, createRequest("GET", "/boards", "", argv[2], NO_ID, ""));
         }
         else
@@ -269,6 +317,7 @@ char *handleCommands(int argc, char *argv[])
         }
         break;
 
+    // PUT /board/name/id
     case 10:
         if (strcmp(argv[5], "item") == 0)
         {
@@ -301,10 +350,12 @@ char *handleCommands(int argc, char *argv[])
     return request;
 }
 
+// Create request based on program command
 char *createRequest(char type[], char url[], char name[], char host[], int id, char content[])
 {
     static char request[BUFFER];
 
+    // Different types of first request line
     if (name[0] == '\0')
     {
         sprintf(request, "%s %s HTTP/1.1\r\nHost: %s\r\n", type, url, host);
@@ -318,7 +369,7 @@ char *createRequest(char type[], char url[], char name[], char host[], int id, c
         sprintf(request, "%s %s/%s HTTP/1.1\r\nHost: %s\r\n", type, url, name, host);
     }
 
-    // concat content
+    // Append content if there is any
     if (content[0] != '\0')
     {
         char ctHeaders[100] = "Content-Type: text/plain\r\n";
@@ -329,6 +380,7 @@ char *createRequest(char type[], char url[], char name[], char host[], int id, c
     return strcat(request, "\r\n");
 }
 
+// Board name error handling, valid chars.: a-z, A-Z, 0-9
 void nameCheck(char name[])
 {
     for (int i = 0; i < strlen(name); i++)
@@ -341,14 +393,17 @@ void nameCheck(char name[])
     }
 }
 
+// Board ID error handling
 void numCheck(char argv[])
 {
+    // Negative number check
     if (argv[0] == '-')
     {
         fprintf(stderr, "%s", "ID can not be negative!");
         exit(1);
     }
 
+    // Check each character if its a number
     for (int i = 0; argv[i] != 0; i++)
     {
         if (!isdigit(argv[i]))
@@ -359,6 +414,7 @@ void numCheck(char argv[])
     }
 }
 
+// Function initializes the string
 int strInit(string *s)
 {
     if ((s->str = (char *)malloc(STR_LEN_INC)) == NULL)
@@ -369,17 +425,20 @@ int strInit(string *s)
     return STR_SUCCESS;
 }
 
+// Function frees all resources used by the string
 void strFree(string *s)
 {
     free(s->str);
 }
 
+// Function clears string data and returns it to after-init state
 void strClear(string *s)
 {
     s->str[0] = '\0';
     s->length = 0;
 }
 
+//  Function appends a character to the string
 int strAddChar(string *s1, char c)
 {
     if (s1->length + 1 >= s1->allocSize)
@@ -394,6 +453,7 @@ int strAddChar(string *s1, char c)
     return STR_SUCCESS;
 }
 
+// Function concatenates string with an array of characters
 int *string_concat(string *s1, const char *s2)
 {
     int length_const_char = strlen(s2);
